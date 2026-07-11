@@ -357,6 +357,56 @@ class FeishuConfig(BaseModel):
     topic_isolation: bool = True  # If True, each topic in group chat gets its own session (isolation)
 
 
+def _persist_feishu_credentials(config: FeishuConfig) -> "Path":
+    """Write Feishu credentials to the ``channels.feishu`` section on disk.
+
+    Merges ``app_id``, ``app_secret``, ``domain`` and ``enabled`` into the
+    existing VT agent config (``~/.vibe-trading/agent.json`` by default),
+    preserving any other channels or settings already present. The file is
+    written with owner-only permissions because it holds a secret.
+
+    Args:
+        config: The in-memory Feishu config holding freshly obtained credentials.
+
+    Returns:
+        The path the credentials were written to.
+
+    Raises:
+        OSError: If the config file cannot be read or written.
+    """
+    from src.config.paths import get_config_path
+
+    path = get_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, Any] = {}
+    if path.exists():
+        with suppress(OSError, json.JSONDecodeError):
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+
+    channels = data.get("channels")
+    if not isinstance(channels, dict):
+        channels = {}
+    feishu = channels.get("feishu")
+    if not isinstance(feishu, dict):
+        feishu = {}
+
+    feishu["app_id"] = config.app_id
+    feishu["app_secret"] = config.app_secret
+    feishu["domain"] = config.domain
+    feishu["enabled"] = config.enabled
+
+    channels["feishu"] = feishu
+    data["channels"] = channels
+
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    with suppress(OSError):
+        os.chmod(path, 0o600)
+    return path
+
+
 # =============================================================================
 # QR scan-to-create onboarding
 #
@@ -603,7 +653,7 @@ class FeishuChannel(BaseChannel):
         self._reaction_ids: dict[str, str] = {}  # message_id → reaction_id
 
     # ------------------------------------------------------------------
-    # QR login — writes credentials directly to config.json
+    # QR login — writes credentials directly to the VT agent config
     # ------------------------------------------------------------------
 
     async def login(self, force: bool = False) -> bool:
@@ -613,8 +663,9 @@ class FeishuChannel(BaseChannel):
         application automatically.  Opens a URL for the user to authorize
         with the Feishu or Lark mobile app.
 
-        On success, writes ``appId``, ``appSecret``, and ``domain`` to
-        ``channels.feishu`` in ``config.json`` and sets ``enabled: true``.
+        On success, writes ``app_id``, ``app_secret``, and ``domain`` to
+        ``channels.feishu`` in the VT agent config (``~/.vibe-trading/agent.json``)
+        and sets ``enabled: true``.
 
         Args:
             force: If True, clear existing credentials and force re-authentication.
@@ -643,19 +694,24 @@ class FeishuChannel(BaseChannel):
         self.config.app_id = result["app_id"]
         self.config.app_secret = result["app_secret"]
         self.config.domain = result.get("domain", "feishu")
+        self.config.enabled = True
 
-        # Write credentials back to config
-        # VT-TODO: persist feishu credentials via VT config system
+        # Write credentials back to the VT config file so the bot can start
+        # without re-authenticating on the next run.
         try:
-            from src.config.loader import load_agent_config
-            # Credentials stored in-memory on self.config; persist via VT config
-            # when channel config persistence is wired up.
-        except Exception:
-            pass
+            saved_path = _persist_feishu_credentials(self.config)
+        except OSError as exc:
+            _LOGIN_CONSOLE.print(
+                f"[yellow]Login succeeded but credentials could not be saved:[/yellow] "
+                f"{escape(str(exc))}"
+            )
+            saved_path = None
 
         _LOGIN_CONSOLE.print("\n[green]Feishu/Lark login complete.[/green]")
         _LOGIN_CONSOLE.print(f"App ID: {escape(result['app_id'])}")
         _LOGIN_CONSOLE.print(f"Domain: {escape(self.config.domain)}")
+        if saved_path is not None:
+            _LOGIN_CONSOLE.print(f"Saved to: {escape(str(saved_path))}")
         return True
 
     @staticmethod
