@@ -442,6 +442,12 @@ def _ensure_dotenv() -> None:
             loaded = candidate
             break
     _dotenv_loaded = True
+    # Invalidate any EnvConfig cached before the .env was loaded. A config
+    # accessed at import time (e.g. status-line/theme helpers) would have
+    # captured schema defaults — provider="openai", model="" — and the cached
+    # singleton would otherwise mask the freshly loaded values, so preflight
+    # reports LANGCHAIN_MODEL_NAME as unset even when .env sets it.
+    reset_env_config()
     # P08 R1: one-time, behavior-preserving diagnostic so a stale or
     # shadowed .env is observable instead of costing hours. The path is
     # redacted to a symbolic slot label and the API key is never logged.
