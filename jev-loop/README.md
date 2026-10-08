@@ -126,6 +126,11 @@ uv run python -m jevloop backtest --mode maker  --symbol BTC/USD --quote-bps 6 -
 
 # tsmom: long/flat daily time-series momentum, head-to-head vs buy-and-hold.
 uv run python -m jevloop backtest --mode tsmom  --symbol BTC/USD --days 700 --lookback-days 50
+
+# walkforward: the anti-curve-fitting test. Picks the lookback on past data,
+# judges it only on later unseen data. If no edge survives here, there is no
+# edge -- which is the honest, expected result for a price-only rule.
+uv run python -m jevloop backtest --mode walkforward --symbol BTC/USD --days 1000
 ```
 
 A backtest is evidence on one asset over one window, not proof of an

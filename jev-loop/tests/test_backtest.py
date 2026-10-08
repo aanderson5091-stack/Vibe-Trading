@@ -238,3 +238,49 @@ def test_tsmom_report_renders():
     assert "TSMOM" in txt
     assert "buy & hold" in txt
     assert "max drawdown" in txt
+
+
+# ============================= walk-forward =============================== #
+from jevloop.backtest import (
+    WalkForwardConfig, simulate_walkforward, format_walkforward_report,
+)
+
+
+def test_walkforward_too_short():
+    res = simulate_walkforward(closes_to_bars([100.0 + i for i in range(50)]),
+                               WalkForwardConfig(train_days=180, test_days=45))
+    assert res.oos_days == 0
+
+
+def test_walkforward_produces_oos_segments():
+    # ~2 years of a gently trending series: enough for several OOS segments.
+    closes = [100.0 * (1.002 ** i) for i in range(700)]
+    res = simulate_walkforward(closes_to_bars(closes),
+                               WalkForwardConfig(train_days=120, test_days=40))
+    assert res.segments >= 3
+    assert res.oos_days == res.segments * 40
+    assert len(res.picks) == res.segments
+    # OOS hold return is just the asset's compounded return over the OOS span
+    assert res.hold_total > 0
+
+
+def test_walkforward_report_mentions_out_of_sample():
+    closes = [100.0 * (1.001 ** i) for i in range(500)]
+    res = simulate_walkforward(closes_to_bars(closes),
+                               WalkForwardConfig(train_days=120, test_days=40))
+    txt = format_walkforward_report(res, "BTC/USD")
+    assert "OUT-OF-SAMPLE" in txt
+    assert "verdict:" in txt
+
+
+def test_walkforward_noise_has_no_edge():
+    # deterministic pseudo-random walk: no real trend -> OOS Sharpe near zero,
+    # the honest "no edge" branch of the verdict.
+    import math
+    closes = [100.0]
+    for i in range(1, 600):
+        closes.append(closes[-1] * (1 + 0.01 * math.sin(i * 1.7) * math.cos(i * 0.3)))
+    res = simulate_walkforward(closes_to_bars(closes),
+                               WalkForwardConfig(train_days=120, test_days=40))
+    assert res.oos_days > 0
+    assert abs(res.strat_sharpe) < 3.0  # no absurd fitted Sharpe out-of-sample

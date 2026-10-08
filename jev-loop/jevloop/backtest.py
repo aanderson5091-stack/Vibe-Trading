@@ -552,6 +552,198 @@ def format_tsmom_report(res: TsmomResult, symbol: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Walk-forward: honest out-of-sample test for curve-fitting
+# --------------------------------------------------------------------------- #
+@dataclass
+class WalkForwardConfig:
+    grid: tuple[int, ...] = (10, 20, 30, 50, 75, 100, 150)  # TSMOM lookbacks to search
+    train_days: int = 180  # in-sample window used to PICK a lookback
+    test_days: int = 45  # out-of-sample window the picked lookback is judged on
+    cost_bps_one_way: float = 15.0
+    bars_per_year: float = 365.0
+
+
+@dataclass
+class WalkForwardResult:
+    cfg: WalkForwardConfig
+    oos_strat_rets: list[float] = field(default_factory=list)
+    oos_hold_rets: list[float] = field(default_factory=list)
+    picks: list[int] = field(default_factory=list)  # lookback chosen per segment
+    segments: int = 0
+
+    def _equity(self, rets: list[float]) -> list[float]:
+        eq = [1.0]
+        for r in rets:
+            eq.append(eq[-1] * (1 + r))
+        return eq
+
+    @staticmethod
+    def _total(eq: list[float]) -> float:
+        return eq[-1] / eq[0] - 1 if len(eq) >= 2 else 0.0
+
+    @staticmethod
+    def _max_dd(eq: list[float]) -> float:
+        peak, dd = (eq[0] if eq else 1.0), 0.0
+        for e in eq:
+            peak = max(peak, e)
+            if peak:
+                dd = min(dd, e / peak - 1)
+        return dd
+
+    def _sharpe(self, rets: list[float]) -> float:
+        if len(rets) < 2:
+            return 0.0
+        m = sum(rets) / len(rets)
+        var = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
+        sd = var ** 0.5
+        return (m / sd) * (self.cfg.bars_per_year ** 0.5) if sd else 0.0
+
+    @property
+    def oos_days(self) -> int:
+        return len(self.oos_strat_rets)
+
+    @property
+    def strat_total(self) -> float:
+        return self._total(self._equity(self.oos_strat_rets))
+
+    @property
+    def hold_total(self) -> float:
+        return self._total(self._equity(self.oos_hold_rets))
+
+    @property
+    def strat_sharpe(self) -> float:
+        return self._sharpe(self.oos_strat_rets)
+
+    @property
+    def hold_sharpe(self) -> float:
+        return self._sharpe(self.oos_hold_rets)
+
+    @property
+    def strat_max_dd(self) -> float:
+        return self._max_dd(self._equity(self.oos_strat_rets))
+
+    @property
+    def hold_max_dd(self) -> float:
+        return self._max_dd(self._equity(self.oos_hold_rets))
+
+    @property
+    def pick_switches(self) -> int:
+        return sum(1 for a, b in zip(self.picks, self.picks[1:]) if a != b)
+
+    @property
+    def distinct_picks(self) -> int:
+        return len(set(self.picks))
+
+
+def _tsmom_series(closes: list[float], L: int, cost: float) -> dict[int, tuple[float, float]]:
+    """t -> (strat_ret, asset_ret) for a fixed lookback L, long/flat, lagged
+    one day, cost charged on each position change."""
+    out: dict[int, tuple[float, float]] = {}
+    prev = 0
+    for t in range(L + 1, len(closes)):
+        r = closes[t] / closes[t - 1] - 1
+        trailing = closes[t - 1] / closes[t - 1 - L] - 1
+        pos = 1 if trailing > 0 else 0
+        tc = cost if pos != prev else 0.0
+        out[t] = (pos * r - tc, r)
+        prev = pos
+    return out
+
+
+def simulate_walkforward(bars: list[dict], cfg: WalkForwardConfig | None = None) -> WalkForwardResult:
+    """Anchored rolling walk-forward. Repeatedly: pick the lookback with the
+    best IN-SAMPLE Sharpe over the last `train_days`, then record that
+    lookback's returns over the next, unseen `test_days`. Concatenate the
+    out-of-sample stretches. This is the test curve-fitting fails: parameters
+    never see the data they are judged on."""
+    cfg = cfg or WalkForwardConfig()
+    res = WalkForwardResult(cfg=cfg)
+    closes = [b["c"] for b in bars]
+    cost = cfg.cost_bps_one_way / 1e4
+    maxL = max(cfg.grid)
+    series = {L: _tsmom_series(closes, L, cost) for L in cfg.grid}
+
+    start = maxL + 1  # first t where every lookback has a value
+    n = len(closes)
+    if n - start < cfg.train_days + cfg.test_days:
+        return res
+
+    def sharpe(rets: list[float]) -> float:
+        if len(rets) < 2:
+            return -1e9
+        m = sum(rets) / len(rets)
+        var = sum((x - m) ** 2 for x in rets) / (len(rets) - 1)
+        sd = var ** 0.5
+        return m / sd if sd else 0.0
+
+    t = start + cfg.train_days
+    while t + cfg.test_days <= n:
+        train_ts = range(t - cfg.train_days, t)
+        best_L, best_s = cfg.grid[0], -1e18
+        for L in cfg.grid:
+            rets = [series[L][tt][0] for tt in train_ts if tt in series[L]]
+            s = sharpe(rets)
+            if s > best_s:
+                best_s, best_L = s, L
+        res.picks.append(best_L)
+        for tt in range(t, t + cfg.test_days):
+            sr, hr = series[best_L][tt]
+            res.oos_strat_rets.append(sr)
+            res.oos_hold_rets.append(hr)
+        res.segments += 1
+        t += cfg.test_days
+
+    return res
+
+
+def format_walkforward_report(res: WalkForwardResult, symbol: str) -> str:
+    cfg = res.cfg
+    L = []
+    L.append("=" * 64)
+    L.append(f"WALK-FORWARD  {symbol}  (TSMOM lookback search, OUT-OF-SAMPLE)")
+    L.append("=" * 64)
+    L.append(f"method: every {cfg.test_days} days, pick the best-Sharpe lookback")
+    L.append(f"from {list(cfg.grid)} over the prior {cfg.train_days} days, then")
+    L.append("trade it on the next, unseen days. Only out-of-sample results count.")
+    L.append("-" * 64)
+    if res.oos_days == 0:
+        L.append("not enough history for one train+test split. Try a larger --days")
+        L.append("or smaller --train-days/--test-days.")
+        L.append("=" * 64)
+        return "\n".join(L)
+    L.append(f"OOS days:             {res.oos_days}  (~{res.oos_days / cfg.bars_per_year:.1f} yrs)")
+    L.append(f"segments:             {res.segments}")
+    L.append(f"lookbacks chosen:     {res.picks}")
+    L.append(f"distinct / switches:  {res.distinct_picks} distinct, "
+             f"{res.pick_switches} switches "
+             f"({'unstable -> overfitting' if res.pick_switches > res.segments / 2 else 'fairly stable'})")
+    L.append("-" * 64)
+    L.append(f"{'metric (OOS only)':<22}{'WF-TSMOM':>18}{'buy & hold':>18}")
+    L.append(f"{'total return':<22}{res.strat_total:>17.1%}{res.hold_total:>18.1%}")
+    L.append(f"{'max drawdown':<22}{res.strat_max_dd:>17.1%}{res.hold_max_dd:>18.1%}")
+    L.append(f"{'Sharpe (annualised)':<22}{res.strat_sharpe:>17.2f}{res.hold_sharpe:>18.2f}")
+    L.append("-" * 64)
+    s = res.strat_sharpe
+    if s > 0.5 and res.strat_total > res.hold_total:
+        verdict = (f"OOS Sharpe {s:.2f} with return above buy-and-hold: a signal "
+                   "worth more scrutiny (more data, more assets, costs stressed). "
+                   "Promising is not proven.")
+    elif res.strat_max_dd > res.hold_max_dd and abs(s) < 0.5:
+        verdict = (f"OOS Sharpe {s:.2f} ~ no return edge, but shallower drawdown "
+                   "than buy-and-hold. Value here is risk reduction, not alpha.")
+    else:
+        verdict = (f"OOS Sharpe {s:.2f}: no durable edge survived out-of-sample. "
+                   "The in-sample 'winners' did not carry forward -- the honest, "
+                   "expected result for a price-only rule on a liquid market.")
+    L.append("verdict: " + verdict)
+    L.append("NOTE: one asset, one history. A real edge must survive this across")
+    L.append("many assets and regimes, with costs stressed. This is the floor the")
+    L.append("claim has to clear, not proof on its own.")
+    L.append("=" * 64)
+    return "\n".join(L)
+
+
+# --------------------------------------------------------------------------- #
 # reporting
 # --------------------------------------------------------------------------- #
 def format_report(res: BacktestResult, symbol: str) -> str:
@@ -615,10 +807,12 @@ def _normalise_bars(raw: list[dict]) -> list[dict]:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="jev-loop backtest")
-    ap.add_argument("--mode", choices=("taker", "maker", "tsmom"), default="taker",
+    ap.add_argument("--mode", choices=("taker", "maker", "tsmom", "walkforward"),
+                    default="taker",
                     help="taker = the scalper's market-order legs; "
                          "maker = long-only spread capture with resting quotes; "
-                         "tsmom = long/flat daily time-series momentum")
+                         "tsmom = long/flat daily time-series momentum; "
+                         "walkforward = out-of-sample lookback search (anti-overfit)")
     ap.add_argument("--symbol", default="BTC/USD")
     ap.add_argument("--minutes", type=int, default=1000,
                     help="[taker/maker] how many 1-minute bars back to replay")
@@ -627,7 +821,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--lookback-days", type=int, default=30,
                     help="[tsmom] trailing-return window whose sign is the signal")
     ap.add_argument("--cost-bps-one-way", type=float, default=15.0,
-                    help="[tsmom] cost per position change (enter or exit), bps")
+                    help="[tsmom/walkforward] cost per position change, bps")
+    ap.add_argument("--train-days", type=int, default=180,
+                    help="[walkforward] in-sample window used to pick a lookback")
+    ap.add_argument("--test-days", type=int, default=45,
+                    help="[walkforward] out-of-sample window judged on")
     ap.add_argument("--fee-bps", type=float, default=15.0,
                     help="[taker] taker fee per side, bps (Alpaca crypto retail ~15)")
     ap.add_argument("--spread-bps", type=float, default=2.0,
@@ -664,8 +862,9 @@ def main(argv: list[str]) -> int:
         return 1
 
     now = _dt.datetime.now(_dt.timezone.utc)
+    daily_mode = args.mode in ("tsmom", "walkforward")
     try:
-        if args.mode == "tsmom":
+        if daily_mode:
             days = max(5, min(args.days, 2000))
             start = now - _dt.timedelta(days=days + 5)
             start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -686,7 +885,12 @@ def main(argv: list[str]) -> int:
         print(f"only {len(bars)} usable bars returned; need more. Try a larger window.")
         return 1
 
-    if args.mode == "tsmom":
+    if args.mode == "walkforward":
+        wcfg = WalkForwardConfig(train_days=args.train_days, test_days=args.test_days,
+                                 cost_bps_one_way=args.cost_bps_one_way)
+        wres = simulate_walkforward(bars, wcfg)
+        print(format_walkforward_report(wres, args.symbol))
+    elif args.mode == "tsmom":
         tcfg = TsmomConfig(lookback_days=args.lookback_days,
                            cost_bps_one_way=args.cost_bps_one_way)
         tres = simulate_tsmom(bars, tcfg)
