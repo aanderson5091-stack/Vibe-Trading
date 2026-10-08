@@ -1,0 +1,24 @@
+[project]
+name = "jev-loop"
+version = "0.1.0"
+description = "A 24/7 paper-trading loop: deterministic state, a seven-question Jev battery, code-owned policy and risk, Alpaca paper execution."
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+calibrate = ["matplotlib>=3.8"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+jev-loop = "jevloop.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jevloop*"]

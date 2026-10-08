@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>PTQ × Jev · analysis wall</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600&family=Fragment+Mono&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;height:100%;background:#0a0a0a;color:#fff;font-family:"Instrument Sans",Helvetica,Arial,sans-serif;overflow:hidden}
+.top{position:absolute;left:40px;top:26px;display:flex;align-items:center;gap:18px;z-index:2}
+.logo{width:56px;height:56px;border-radius:14px;background:#0a8cff;display:grid;place-items:center;font-weight:600;font-size:22px;letter-spacing:-.02em}
+h1{margin:0;font-size:40px;font-weight:600;letter-spacing:-.02em;text-transform:uppercase}
+h1 span{color:#5cf07a}
+.hud{position:absolute;right:40px;top:34px;font-family:"Fragment Mono",monospace;font-size:14px;color:rgba(255,255,255,.75);text-align:right;line-height:1.7;z-index:2}
+.hud b{color:#fff;font-weight:400}
+.mockflag{color:#ffd166}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+</style></head><body>
+<div class="top"><div class="logo">P</div><h1>PTQ × Jev: 24/7 <span>HFT</span> loop</h1></div>
+<div class="hud">
+  <span id="s" style="font-size:32px;font-weight:600;font-family:'Instrument Sans',sans-serif;letter-spacing:-.02em">—</span><br>
+  tick <b id="b">—</b><br>
+  last <b id="ms">—</b> · seven judgments · one call<br>
+  decisions <b id="n">0</b> · <span id="mode">paper mode</span><br>
+  <span style="color:#5cf07a">green line = buying</span> · <span style="color:#ff5f5f">red line = selling</span>
+</div>
+<canvas id="c"></canvas>
+<script>
+// Reads the real jev-loop output from latest.json. No simulation: every
+// point plotted here is a tick the loop actually decided on.
+const c=document.getElementById('c'),ctx=c.getContext('2d');let W,H;
+function rs(){W=c.width=innerWidth*devicePixelRatio;H=c.height=innerHeight*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0)}
+addEventListener('resize',rs);rs();
+const TOP=130,BOT=innerHeight-70,LEFT=40,RIGHT=innerWidth-110;
+let lo=null,hi=null,lastTick=-1;
+const pts=[],sides=[],marks=[],pulses=[];let bigWord=null,band=null;
+
+function y(p){ if(lo===null||hi===null) return (TOP+BOT)/2; return TOP+(BOT-TOP)*(1-(p-lo)/Math.max(hi-lo,1e-6)); }
+
+function sideOf(t){
+  if(t.paused || t.late || t.action==='HOLD_LATE') return 'late';
+  if(t.direction_leg==='up') return 'buy';
+  if(t.direction_leg==='down') return 'sell';
+  if(t.action==='PULL_QUOTES'||t.action==='STAND_DOWN') return 'late';
+  return (t.skew||0) < 0 ? 'sell' : 'buy';
+}
+
+async function poll(){
+  try{
+    const res=await fetch('latest.json',{cache:'no-store'});
+    const data=await res.json();
+    ingest(data);
+  }catch(e){}
+  setTimeout(poll,1000);
+}
+
+function ingest(data){
+  const ticks=data.ticks||[];
+  if(!ticks.length) return;
+  const prices=ticks.map(t=>t.mid).filter(v=>v!=null);
+  if(prices.length){ lo=Math.min(...prices); hi=Math.max(...prices); const pad=(hi-lo)*0.1||hi*0.001; lo-=pad; hi+=pad; }
+
+  pts.length=0; sides.length=0;
+  for(const t of ticks){ pts.push(t.mid); sides.push(sideOf(t)); }
+
+  const t=ticks[ticks.length-1];
+  if(t.tick===lastTick) return;
+  lastTick=t.tick;
+
+  const side=sideOf(t);
+  const conf = t.quote_environment_conf!=null? t.quote_environment_conf : (t.regime_conf||0.5);
+  document.getElementById('s').textContent=(side==='late'?(t.paused?'PAUSED':(t.action||'HOLD')):side.toUpperCase())+' '+Math.round(conf*100)+'%';
+  document.getElementById('s').style.color= side==='buy'?'#5cf07a':side==='sell'?'#ff5f5f':'#ffd166';
+  document.getElementById('b').textContent=t.tick.toLocaleString();
+  document.getElementById('ms').textContent=t.latency_ms? Math.round(t.latency_ms)+' ms':'late';
+  document.getElementById('n').textContent=(data.stats&&data.stats.calls||0).toLocaleString();
+  const modeEl=document.getElementById('mode');
+  const isMock=(data.stats&&(data.stats.decision_client||'').toUpperCase()==='MOCK');
+  modeEl.textContent = isMock? 'MOCK DECISION CLIENT · paper mode' : 'paper mode';
+  modeEl.className = isMock? 'mockflag' : '';
+
+  band={side,a:1};
+  bigWord={side,conf,a:1};
+  pulses.push({side,conf,a:1});
+}
+
+function draw(){
+  ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,innerWidth,innerHeight);
+  if(band){band.a-=.035;if(band.a>0){ctx.fillStyle=(band.side==='buy'?'rgba(92,240,122,':band.side==='sell'?'rgba(255,80,80,':'rgba(255,209,102,')+(band.a*.22)+')';ctx.fillRect(RIGHT-140,TOP,140,BOT-TOP)}}
+  ctx.strokeStyle='rgba(255,255,255,.07)';ctx.setLineDash([2,6]);ctx.lineWidth=1;
+  if(lo!==null){
+    for(let k=0;k<=4;k++){const v=lo+(hi-lo)*k/4,yy=y(v);ctx.beginPath();ctx.moveTo(LEFT,yy);ctx.lineTo(RIGHT,yy);ctx.stroke();ctx.fillStyle='rgba(255,255,255,.6)';ctx.font='12px "Fragment Mono",monospace';ctx.fillText(v.toFixed(1),RIGHT+14,yy+4)}
+  }
+  ctx.setLineDash([]);
+
+  if(pts.length>1){
+    const N=pts.length,stepX=(RIGHT-LEFT)/Math.max(1,Math.min(N,120)-1),start=Math.max(0,N-120);
+    ctx.lineWidth=2.2;
+    for(let i=start+1;i<N;i++){
+      if(pts[i]==null||pts[i-1]==null) continue;
+      const x0=LEFT+(i-1-start)*stepX,x1=LEFT+(i-start)*stepX;
+      ctx.strokeStyle=sides[i]==='buy'?'#5cf07a':sides[i]==='sell'?'#ff5f5f':'rgba(255,255,255,.85)';
+      ctx.beginPath();ctx.moveTo(x0,y(pts[i-1]));ctx.lineTo(x1,y(pts[i-1]));ctx.lineTo(x1,y(pts[i]));ctx.stroke();
+    }
+    const lastPx=pts[N-1];
+    if(lastPx!=null){
+      const lx=RIGHT,ly=y(lastPx);
+      ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(lx,ly,5,0,7);ctx.fill();
+      ctx.fillStyle='#0a8cff';ctx.fillRect(lx+8,ly-11,84,22);
+      ctx.fillStyle='#fff';ctx.font='12px "Fragment Mono",monospace';ctx.fillText(lastPx.toFixed(1),lx+14,ly+4);
+    }
+  }
+
+  if(bigWord){bigWord.a-=.02;if(bigWord.a>0){
+    ctx.globalAlpha=Math.min(1,bigWord.a*1.4);
+    ctx.fillStyle=bigWord.side==='buy'?'#5cf07a':bigWord.side==='sell'?'#ff5f5f':'#ffd166';
+    ctx.font='600 100px "Instrument Sans",sans-serif';ctx.textAlign='right';
+    ctx.fillText(bigWord.side.toUpperCase(),RIGHT-30,TOP+150+(1-bigWord.a)*-20);
+    ctx.font='26px "Fragment Mono",monospace';ctx.fillText('conf '+Math.round(bigWord.conf*100)+'%',RIGHT-34,TOP+186);
+    ctx.textAlign='left';ctx.globalAlpha=1;
+  }}
+
+  for(const q of pulses){q.a-=.012;}
+  while(pulses.length&&pulses[0].a<=0)pulses.shift();
+  for(const q of pulses){
+    if(q.a<=0)continue;
+    const yy = lo!==null && pts.length ? y(pts[pts.length-1]) : (TOP+BOT)/2;
+    ctx.globalAlpha=q.a*.9;ctx.strokeStyle=q.side==='buy'?'#5cf07a':q.side==='sell'?'#ff5f5f':'#ffd166';ctx.lineWidth=2.5;
+    ctx.beginPath();ctx.arc(RIGHT,yy,8+(1-q.a)*44,0,7);ctx.stroke();ctx.globalAlpha=1;
+  }
+
+  const now=new Date();ctx.fillStyle='rgba(255,255,255,.55)';ctx.font='11px "Fragment Mono",monospace';
+  for(let i=0;i<9;i++){const x=LEFT+i*(RIGHT-LEFT)/8;const d=new Date(now-(8-i)*4000);ctx.fillText(d.toTimeString().slice(0,8),x-28,BOT+24)}
+  requestAnimationFrame(draw);
+}
+poll();draw();
+</script></body></html>
