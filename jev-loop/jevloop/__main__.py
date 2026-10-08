@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-USAGE = "usage: jev-loop <run|calibrate|serve|pause|resume|validate-symbol|explain-split> [options]"
+USAGE = "usage: jev-loop <run|backtest|calibrate|serve|pause|resume|validate-symbol|explain-split> [options]"
 
 
 def _validate_symbol(argv: list[str]) -> int:
@@ -52,6 +52,10 @@ def main() -> int:
         from . import loop
 
         return loop.main(rest)
+    if command == "backtest":
+        from . import backtest
+
+        return backtest.main(rest)
     if command == "calibrate":
         from . import calibrate
 

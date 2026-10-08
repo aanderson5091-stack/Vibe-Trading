@@ -141,24 +141,39 @@ def _clamp(x: float, lo: float = -1.0, hi: float = 1.0) -> float:
 
 def _micro_signal(snapshot: dict, p: ScalpParams) -> float:
     """Composite directional pressure in [-1, 1], positive = buy pressure.
-    Computed only from deterministic snapshot fields. Missing/None fields
-    contribute 0 rather than a fabricated reading."""
-    mid = snapshot.get("mid") or 0.0
-    micro = snapshot.get("microprice") or mid
 
-    tilt_bps = ((micro - mid) / mid * 1e4) if mid else 0.0
-    s_tilt = _clamp(tilt_bps / p.tilt_full_bps) if p.tilt_full_bps else 0.0
+    Computed only from deterministic snapshot fields. A field that is
+    genuinely absent (None, or no book so microprice == mid) does not
+    contribute a fabricated 0 that dilutes the blend: the weights are
+    renormalised over the components that actually have data. So with a
+    full book all four weigh in as shipped; with only momentum (e.g. a
+    historical-bar replay, or a momentary book-feed gap) momentum drives
+    the full range instead of being capped at its 0.20 weight."""
+    mid = snapshot.get("mid") or 0.0
+    micro = snapshot.get("microprice")
+
+    components: list[tuple[float, float]] = []  # (weight, score)
+
+    if mid and micro is not None and micro != mid and p.tilt_full_bps:
+        tilt_bps = (micro - mid) / mid * 1e4
+        components.append((p.w_tilt, _clamp(tilt_bps / p.tilt_full_bps)))
 
     imb = snapshot.get("imbalance")
-    s_imb = _clamp((imb or 0.0) / p.imb_full) if p.imb_full else 0.0
+    if imb is not None and p.imb_full:
+        components.append((p.w_imb, _clamp(imb / p.imb_full)))
 
     abr = snapshot.get("aggressive_buy_ratio")
-    s_abr = _clamp(((abr - 0.5) / p.abr_full)) if (abr is not None and p.abr_full) else 0.0
+    if abr is not None and p.abr_full:
+        components.append((p.w_abr, _clamp((abr - 0.5) / p.abr_full)))
 
     r1 = snapshot.get("return_1m")
-    s_mom = _clamp((r1 or 0.0) / p.mom_full) if p.mom_full else 0.0
+    if r1 is not None and p.mom_full:
+        components.append((p.w_mom, _clamp(r1 / p.mom_full)))
 
-    raw = p.w_tilt * s_tilt + p.w_imb * s_imb + p.w_abr * s_abr + p.w_mom * s_mom
+    wsum = sum(w for w, _ in components)
+    if wsum <= 0:
+        return 0.0
+    raw = sum(w * s for w, s in components) / wsum
     return _clamp(raw)
 
 
