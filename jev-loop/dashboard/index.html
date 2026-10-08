@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="jev-control-token" content="__JEV_CONTROL_TOKEN__" />
+    <title>PTQ · Jev loop</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Fragment+Mono&family=Instrument+Serif:ital@1&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --canvas: #f6f6f8;
+        --ink: #0b0b10;
+        --ink2: #3b3f4b;
+        --ink3: #5b5f6b;
+        --muted: #8a8f9c;
+        --hair: rgba(11, 11, 16, 0.1);
+        --hair2: rgba(11, 11, 16, 0.14);
+        --blue: #0a8cff;
+        --green: #1f7a4d;
+        --red: #b91c1c;
+        --amber: #b7791f;
+        --green-soft: rgba(31, 122, 77, 0.1);
+        --red-soft: rgba(216, 13, 13, 0.08);
+        --amber-soft: rgba(183, 121, 31, 0.1);
+        --blue-soft: rgba(10, 140, 255, 0.1);
+        --card: rgba(255, 255, 255, 0.72);
+        --sans: "Instrument Sans", -apple-system, Helvetica, Arial, sans-serif;
+        --mono: "Fragment Mono", ui-monospace, Menlo, monospace;
+        --serif: "Instrument Serif", Georgia, serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--canvas);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 14px;
+        -webkit-font-smoothing: antialiased;
+      }
+      body {
+        background:
+          radial-gradient(
+            60% 55% at 12% 0%,
+            rgba(255, 138, 212, 0.35),
+            transparent 60%
+          ),
+          radial-gradient(
+            55% 60% at 88% 8%,
+            rgba(140, 200, 255, 0.38),
+            transparent 60%
+          ),
+          radial-gradient(
+            50% 50% at 70% 100%,
+            rgba(179, 157, 255, 0.3),
+            transparent 60%
+          ),
+          radial-gradient(
+            45% 45% at 15% 100%,
+            rgba(255, 178, 122, 0.28),
+            transparent 60%
+          ),
+          var(--canvas);
+        display: grid;
+        place-items: center;
+        padding: 28px;
+      }
+      .frame {
+        width: min(1640px, 100%);
+        height: calc(100vh - 56px);
+        min-height: 720px;
+        display: flex;
+        flex-direction: column;
+        background: rgba(255, 255, 255, 0.55);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        border: 1px solid rgba(255, 255, 255, 0.7);
+        border-radius: 22px;
+        box-shadow: 0 30px 80px rgba(11, 11, 16, 0.1);
+        padding: 22px 26px 24px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .brand {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+      }
+      .brand b {
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .brand i {
+        font-family: var(--serif);
+        font-style: italic;
+        font-size: 19px;
+        color: var(--ink2);
+      }
+      .block {
+        font-family: var(--mono);
+        color: var(--ink3);
+        font-size: 13px;
+        margin-left: 6px;
+      }
+      .pills {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+      }
+      .pill {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        border: 1px solid var(--hair2);
+        background: rgba(255, 255, 255, 0.7);
+        color: var(--ink2);
+      }
+      .pill.blue {
+        background: var(--blue-soft);
+        border-color: transparent;
+        color: #0763b8;
+      }
+      .pill.live {
+        background: var(--green-soft);
+        border-color: transparent;
+        color: var(--green);
+      }
+      .pill.mock {
+        background: var(--amber-soft);
+        border-color: transparent;
+        color: var(--amber);
+      }
+      .pill .dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        margin-right: 7px;
+        animation: pulse 1.2s infinite;
+      }
+      .control {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .ctlstate.running {
+        background: var(--green-soft);
+        border-color: transparent;
+        color: var(--green);
+      }
+      .ctlstate.paused {
+        background: var(--amber-soft);
+        border-color: transparent;
+        color: var(--amber);
+      }
+      .ctlbtn {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 6px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--hair2);
+        background: rgba(255, 255, 255, 0.9);
+        color: var(--ink);
+        cursor: pointer;
+      }
+      .ctlbtn:hover:not(:disabled) {
+        border-color: var(--ink3);
+      }
+      .ctlbtn:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .ctlnote {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--ink3);
+        margin: 8px 0 0;
+      }
+      .ctlnote.err {
+        color: var(--red);
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+      .stats {
+        display: flex;
+        gap: 22px;
+        margin: 10px 0 14px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--ink3);
+      }
+      .stats b {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      .stats .right {
+        margin-left: auto;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1.3fr 0.9fr;
+        gap: 16px;
+        flex: 1;
+        min-height: 0;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--hair);
+        border-radius: 16px;
+        padding: 18px 20px;
+        position: relative;
+        overflow: hidden;
+        min-height: 0;
+      }
+      .left {
+        display: flex;
+        flex-direction: column;
+      }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .pricebar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+      .price {
+        font-family: var(--mono);
+        font-size: 46px;
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }
+      .sub {
+        display: flex;
+        gap: 14px;
+        margin-top: 8px;
+        font-size: 13px;
+        color: var(--ink3);
+      }
+      .sub .pnl {
+        font-family: var(--mono);
+      }
+      .pnl.neg {
+        color: var(--red);
+      }
+      .pnl.pos {
+        color: var(--green);
+      }
+      .verdict {
+        text-align: right;
+      }
+      .verdict .act {
+        font-size: 32px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        transition: color 0.15s;
+      }
+      .verdict .meta {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--ink3);
+        margin-top: 6px;
+      }
+      .act.buy {
+        color: var(--green);
+      }
+      .act.sell {
+        color: var(--red);
+      }
+      .act.late {
+        color: var(--amber);
+      }
+      .snap {
+        margin-top: 12px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: rgba(11, 11, 16, 0.04);
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink3);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+      }
+      .snap b {
+        font-weight: 400;
+        color: var(--ink);
+      }
+      .snap .k {
+        color: var(--muted);
+      }
+      .chart {
+        margin-top: 10px;
+        flex: 1;
+        min-height: 240px;
+        position: relative;
+      }
+      .chart svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+        overflow: visible;
+      }
+      .axis {
+        font-family: var(--mono);
+        font-size: 11px;
+        fill: var(--muted);
+      }
+      .tag {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .strip {
+        display: flex;
+        gap: 3px;
+        height: 22px;
+        margin-top: 10px;
+        align-items: flex-end;
+      }
+      .strip i {
+        flex: 1;
+        min-width: 0;
+        height: 100%;
+        border-radius: 3px;
+        background: var(--hair);
+        transition: background 0.2s;
+      }
+      .strip i.buy {
+        background: #7cc9a0;
+      }
+      .strip i.sell {
+        background: #e79a94;
+      }
+      .strip i.late {
+        background: #e2c072;
+      }
+      .strip i:last-child {
+        outline: 2px solid var(--ink);
+        outline-offset: 1px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 12px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      /* right */
+      .rcol {
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 16px;
+        min-height: 0;
+      }
+      .order {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--ink2);
+        margin-top: 8px;
+        line-height: 1.6;
+      }
+      .side {
+        position: relative;
+      }
+      .side .big {
+        display: flex;
+        align-items: baseline;
+        gap: 16px;
+        margin-top: 8px;
+      }
+      .side .word {
+        font-size: 64px;
+        font-weight: 600;
+        letter-spacing: -0.03em;
+        line-height: 1;
+      }
+      .side .pct {
+        font-family: var(--mono);
+        font-size: 30px;
+        color: var(--ink2);
+      }
+      .side.buy .word {
+        color: var(--green);
+      }
+      .side.sell .word {
+        color: var(--red);
+      }
+      .side.late .word {
+        color: var(--amber);
+      }
+      .side .word.flip {
+        animation: flip 0.45s ease;
+      }
+      @keyframes flip {
+        0% {
+          transform: translateY(10px);
+          opacity: 0;
+        }
+        60% {
+          transform: translateY(-3px);
+          opacity: 1;
+        }
+        100% {
+          transform: none;
+        }
+      }
+      .side .flash {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0;
+        border-radius: 16px;
+      }
+      .side.buy .flash {
+        background: var(--green-soft);
+      }
+      .side.sell .flash {
+        background: var(--red-soft);
+      }
+      .side .flash.go {
+        animation: flash 0.5s ease;
+      }
+      @keyframes flash {
+        0% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+      .bars {
+        margin-top: 18px;
+        display: grid;
+        gap: 12px;
+      }
+      .brow {
+        display: grid;
+        grid-template-columns: 44px 1fr 52px;
+        align-items: center;
+        gap: 12px;
+        font-size: 14px;
+      }
+      .brow .lbl {
+        color: var(--ink3);
+      }
+      .brow.buy .lbl {
+        color: var(--green);
+      }
+      .brow.sell .lbl {
+        color: var(--red);
+      }
+      .bar {
+        height: 12px;
+        border-radius: 999px;
+        background: rgba(11, 11, 16, 0.07);
+        overflow: hidden;
+      }
+      .bar span {
+        display: block;
+        height: 100%;
+        border-radius: 999px;
+        transition: width 0.3s ease;
+      }
+      .brow.buy .bar span {
+        background: #7cc9a0;
+      }
+      .brow.sell .bar span {
+        background: #e79a94;
+      }
+      .brow .v {
+        font-family: var(--mono);
+        text-align: right;
+      }
+      .feed {
+        display: flex;
+        flex-direction: column;
+      }
+      .feed table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        margin-top: 10px;
+      }
+      .feed td {
+        padding: 7px 8px;
+        white-space: nowrap;
+        color: var(--ink3);
+      }
+      .feed tr.buy td {
+        background: var(--green-soft);
+      }
+      .feed tr.sell td {
+        background: var(--red-soft);
+      }
+      .feed tr.late td {
+        background: var(--amber-soft);
+      }
+      .feed td.a {
+        font-weight: 600;
+        color: var(--ink);
+      }
+      .feed tr.buy td.a {
+        color: var(--green);
+      }
+      .feed tr.sell td.a {
+        color: var(--red);
+      }
+      .feed tr.late td.a {
+        color: var(--amber);
+      }
+      .feed tr:first-child td {
+        animation: in 0.35s ease;
+      }
+      @keyframes in {
+        from {
+          opacity: 0;
+          transform: translateY(-4px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <header>
+        <div class="brand"><b>PTQ</b><i>Jev loop</i></div>
+        <span class="block">tick <span id="blk">—</span></span>
+        <div class="pills">
+          <span class="pill live" id="modepill"
+            ><span class="dot"></span>paper mode</span
+          ><span class="pill" id="symbolpill">—</span
+          ><span class="pill blue" id="modelpill">—</span>
+        </div>
+        <div class="control">
+          <span class="pill ctlstate" id="ctlstate">—</span>
+          <button class="ctlbtn" id="ctlstart" type="button" disabled>Start</button>
+          <button class="ctlbtn" id="ctlstop" type="button" disabled>Stop</button>
+        </div>
+      </header>
+      <div class="ctlnote" id="ctlnote">
+        Stop pauses new orders only. Data and this page keep updating, and
+        open positions stay open. Closing positions is the KILL switch's job
+        (the hard risk limits), which still works while paused.
+      </div>
+      <div class="stats">
+        <span>last <b id="lastms">—</b></span
+        ><span>avg <b id="avgms">—</b></span
+        ><span><b id="calls">0</b> decisions</span
+        ><span>late <b id="late">0</b></span
+        ><span class="right">uptime <b id="up">00:00:00</b></span>
+      </div>
+      <div class="grid">
+        <section class="card left">
+          <div class="pricebar">
+            <div>
+              <div class="price" id="px">0.00</div>
+              <div class="sub">
+                <span id="pos">flat</span
+                ><span class="pnl" id="pnl">p&amp;l 0.00 (0.00%)</span
+                ><span id="spread">spread — bps</span>
+              </div>
+            </div>
+            <div class="verdict">
+              <div class="act buy" id="act">—</div>
+              <div class="meta">
+                <span id="actms">— ms</span> · <span id="actreason">—</span>
+              </div>
+            </div>
+          </div>
+          <div class="snap" id="snap"></div>
+          <div class="chart"><svg id="svg"></svg></div>
+          <div class="strip" id="strip"></div>
+          <div class="foot">
+            <span
+              >one dot per tick · green buy · red sell · amber late/hold</span
+            ><span id="cadence">— s ticks · one decision per tick</span>
+          </div>
+        </section>
+        <div class="rcol">
+          <section class="card">
+            <div class="eyebrow">Standing order</div>
+            <div class="order">
+              &gt; quote both sides of the book on Alpaca paper crypto, every
+              tick. take a small directional fill when Jev's direction call is
+              confident. hold if late. never live.
+            </div>
+          </section>
+          <section class="card side buy" id="side">
+            <div class="flash" id="flash"></div>
+            <div class="eyebrow">Battery this tick</div>
+            <div class="big">
+              <span class="word" id="word">—</span
+              ><span class="pct" id="wpct"></span>
+            </div>
+            <div class="bars">
+              <div class="brow buy">
+                <span class="lbl">env</span>
+                <div class="bar"><span id="bb"></span></div>
+                <span class="v" id="bv">—</span>
+              </div>
+              <div class="brow sell">
+                <span class="lbl">tox</span>
+                <div class="bar"><span id="sb"></span></div>
+                <span class="v" id="sv">—</span>
+              </div>
+            </div>
+          </section>
+          <section class="card feed">
+            <div class="eyebrow">Feed</div>
+            <table id="feed"></table>
+          </section>
+        </div>
+      </div>
+    </div>
+    <script>
+      // This dashboard reads the real jev-loop output. It polls latest.json
+      // (written by jevloop/loop.py, one entry per tick, last 120 ticks) and
+      // renders it with the exact layout used in the video. Nothing here is
+      // simulated: if latest.json is empty, the dashboard is honestly empty.
+      const $ = (id) => document.getElementById(id);
+      const hist = [],
+        N = 90,
+        svg = $("svg"),
+        strip = $("strip"),
+        feed = $("feed");
+      for (let i = 0; i < N; i++)
+        strip.appendChild(document.createElement("i"));
+      let lastTick = -1,
+        startedAt = null;
+
+      function sideOf(t) {
+        if (t.paused || t.late || t.action === "HOLD_LATE") return "late";
+        if (t.direction_leg === "up") return "buy";
+        if (t.direction_leg === "down") return "sell";
+        if (t.action === "PULL_QUOTES" || t.action === "STAND_DOWN")
+          return "late";
+        return (t.skew || 0) < 0 ? "sell" : "buy"; // quoting with no leg: colour by skew direction
+      }
+
+      // Start / Stop. The state lives in ~/.jev-loop/control.json, so it
+      // survives a refresh; the loop reads it before every order.
+      const ctlToken =
+        document.querySelector('meta[name="jev-control-token"]').content;
+      const ctlNoteText = $("ctlnote").textContent;
+      function showControl(state) {
+        const el = $("ctlstate");
+        el.textContent = state;
+        el.className =
+          "pill ctlstate " + (state === "PAUSED" ? "paused" : "running");
+        $("ctlstart").disabled = state !== "PAUSED";
+        $("ctlstop").disabled = state !== "RUNNING";
+      }
+      function controlError(msg) {
+        const n = $("ctlnote");
+        n.className = "ctlnote err";
+        n.textContent = msg;
+      }
+      async function pollControl() {
+        try {
+          const res = await fetch("control", { cache: "no-store" });
+          if (res.ok) showControl((await res.json()).state);
+        } catch (e) {
+          /* server restarting: keep the last state shown */
+        }
+        setTimeout(pollControl, 2000);
+      }
+      async function setControl(state) {
+        $("ctlstart").disabled = $("ctlstop").disabled = true;
+        try {
+          const res = await fetch("control", {
+            method: "POST",
+            cache: "no-store",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Jev-Token": ctlToken,
+            },
+            body: JSON.stringify({ state }),
+          });
+          const body = await res.json();
+          if (!res.ok) throw new Error(body.error || res.status);
+          const n = $("ctlnote");
+          n.className = "ctlnote";
+          n.textContent = ctlNoteText;
+          showControl(body.state);
+        } catch (e) {
+          controlError(
+            "Could not change state (" + e.message + "). Open this page from jevloop serve at http://127.0.0.1:8765/ and try again.",
+          );
+          const res = await fetch("control", { cache: "no-store" }).catch(() => null);
+          if (res && res.ok) showControl((await res.json()).state);
+        }
+      }
+      $("ctlstart").onclick = () => setControl("RUNNING");
+      $("ctlstop").onclick = () => setControl("PAUSED");
+      pollControl();
+
+      async function poll() {
+        try {
+          const res = await fetch("latest.json", { cache: "no-store" });
+          const data = await res.json();
+          render(data);
+        } catch (e) {
+          /* dashboard stays on last good frame if the loop is between writes */
+        }
+        setTimeout(poll, 1000);
+      }
+
+      function render(data) {
+        const ticks = data.ticks || [];
+        if (!ticks.length) return;
+        const stats = data.stats || {};
+        if (startedAt === null)
+          startedAt = Date.now() - (stats.uptime_s || 0) * 1000;
+
+        $("symbolpill").textContent = data.symbol || "—";
+        $("modelpill").textContent = stats.model || "—";
+        const modePill = $("modepill");
+        if ((stats.decision_client || "").toUpperCase() === "MOCK") {
+          modePill.className = "pill mock";
+          modePill.innerHTML = '<span class="dot"></span>MOCK';
+        } else {
+          modePill.className = "pill live";
+          modePill.innerHTML = '<span class="dot"></span>paper mode';
+        }
+        $("cadence").textContent =
+          (stats.tick_seconds || 2) + "s ticks · one decision per tick";
+
+        const t = ticks[ticks.length - 1];
+        if (t.tick === lastTick) {
+          drawChart();
+          return;
+        }
+        lastTick = t.tick;
+
+        $("blk").textContent = t.tick.toLocaleString();
+        $("px").textContent = t.mid
+          ? t.mid.toLocaleString(undefined, { maximumFractionDigits: 1 })
+          : "0.00";
+        $("lastms").textContent = t.latency_ms
+          ? Math.round(t.latency_ms) + " ms"
+          : "late";
+        $("avgms").textContent = stats.avg_ms
+          ? Math.round(stats.avg_ms) + " ms"
+          : "—";
+        $("calls").textContent = (stats.calls || 0).toLocaleString();
+        $("late").textContent = stats.late_count || 0;
+        const upS = Math.floor((Date.now() - startedAt) / 1000);
+        $("up").textContent = [upS / 3600, (upS % 3600) / 60, upS % 60]
+          .map((x) => String(Math.floor(x)).padStart(2, "0"))
+          .join(":");
+
+        $("pos").textContent = !t.inventory
+          ? "flat"
+          : (t.inventory > 0 ? "long " : "short ") + Math.abs(t.inventory);
+        const pnlEl = $("pnl");
+        const pnl = t.unrealised_pnl_usd || 0;
+        pnlEl.textContent = `p&l ${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)} (${((t.drawdown_pct || 0) * 100).toFixed(2)}% dd)`;
+        pnlEl.className = "pnl " + (pnl >= 0 ? "pos" : "neg");
+        $("spread").textContent =
+          "spread " +
+          (t.spread_bps != null ? t.spread_bps.toFixed(1) : "—") +
+          " bps";
+
+        const side = sideOf(t);
+        const a = $("act");
+        a.textContent = t.paused
+          ? "PAUSED · no new orders"
+          : t.action + (t.direction_leg ? ` (${t.direction_leg} leg)` : "");
+        a.className = "act " + side;
+        $("actms").textContent = t.latency_ms
+          ? Math.round(t.latency_ms) + " ms"
+          : "late";
+        $("actreason").textContent = t.action_reason || "";
+
+        $("snap").innerHTML =
+          `<span class=k>route</span><span><b>${t.route || "—"}</b></span>` +
+          `<span class=k>regime</span><span><b>${t.regime || "—"} ${t.regime_conf ? Math.round(t.regime_conf * 100) + "%" : ""}</b></span>` +
+          `<span class=k>direction</span><span><b>${t.direction || "—"}</b></span>` +
+          `<span class=k>toxic</span><span><b>${t.toxic_flow != null ? t.toxic_flow.toFixed(2) : "—"}</b></span>` +
+          `<span class=k>liquidity stress</span><span><b>${t.liquidity_stressed != null ? t.liquidity_stressed.toFixed(2) : "—"}</b></span>` +
+          `<span class=k>env</span><span><b>${t.quote_environment != null ? t.quote_environment.toFixed(2) : "—"}</b></span>` +
+          `<span class=k>inv pressure</span><span><b>${t.inventory_pressure != null ? t.inventory_pressure.toFixed(2) : "—"}</b></span>` +
+          `<span class=k>execution health</span><span><b>${t.execution_health != null ? t.execution_health.toFixed(2) : "—"}</b></span>` +
+          `<span class=k>vwap</span><span><b>${t.vwap != null ? t.vwap.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</b></span>` +
+          `<span class=k>rung</span><span><b>${t.rung || "—"}</b></span>`;
+
+        const sideEl = $("side"),
+          word = $("word");
+        sideEl.className = "card side " + side;
+        const label =
+          side === "late"
+            ? t.paused
+              ? "PAUSED"
+              : t.action === "HOLD_LATE"
+              ? "LATE"
+              : t.action
+            : side.toUpperCase();
+        if (word.textContent !== label) {
+          word.textContent = label;
+          word.classList.remove("flip");
+          void word.offsetWidth;
+          word.classList.add("flip");
+          const f = $("flash");
+          f.classList.remove("go");
+          void f.offsetWidth;
+          f.classList.add("go");
+        }
+        $("wpct").textContent =
+          t.quote_environment_conf != null
+            ? Math.round(t.quote_environment_conf * 100) + "%"
+            : "";
+        const envPct =
+          t.quote_environment != null
+            ? Math.min(100, (t.quote_environment / 3) * 100)
+            : 0;
+        const toxPct = t.toxic_flow != null ? t.toxic_flow * 100 : 0;
+        $("bb").style.width = envPct + "%";
+        $("sb").style.width = toxPct + "%";
+        $("bv").textContent =
+          t.quote_environment != null
+            ? t.quote_environment.toFixed(1) + "/3"
+            : "—";
+        $("sv").textContent =
+          t.toxic_flow != null ? t.toxic_flow.toFixed(2) : "—";
+
+        hist.length = 0;
+        for (const row of ticks) hist.push({ px: row.mid, side: sideOf(row) });
+        const bars = strip.children;
+        for (let i = 0; i < N; i++) {
+          const h = hist[hist.length - N + i];
+          bars[i].className = h ? h.side : "";
+        }
+
+        const tr = document.createElement("tr");
+        tr.className = side;
+        const fill = t.fill_qty
+          ? `${t.fill_qty} @ ${t.fill_price ? t.fill_price.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "—"}`
+          : "—";
+        tr.innerHTML = `<td>${t.tick}</td><td class="a">${label}</td><td>${t.quote_environment_conf != null ? "conf " + t.quote_environment_conf.toFixed(2) : ""}</td><td>${t.latency_ms ? Math.round(t.latency_ms) + "ms" : "late"}</td><td>${fill}</td><td>paper</td>`;
+        feed.prepend(tr);
+        while (feed.children.length > 16) feed.lastChild.remove();
+
+        drawChart();
+      }
+
+      function drawChart() {
+        const box = svg.parentElement.getBoundingClientRect(),
+          W = Math.max(300, box.width),
+          H = Math.max(200, box.height),
+          padR = 96,
+          padB = 18,
+          pts = hist;
+        svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+        if (pts.length < 2) return;
+        const xs = pts.map((p) => p.px).filter((v) => v != null);
+        if (!xs.length) return;
+        const lo = Math.min(...xs),
+          hi = Math.max(...xs),
+          span = Math.max(hi - lo, lo * 0.0001);
+        const X = (i) => (i * (W - padR)) / (N - 1),
+          Y = (v) => 12 + (H - padB - 24) * (1 - (v - lo) / span),
+          off = N - pts.length;
+        let d = "";
+        pts.forEach((p, i) => {
+          if (p.px == null) return;
+          const x = X(i + off),
+            y = Y(p.px);
+          d += d ? ` H${x.toFixed(1)} V${y.toFixed(1)}` : `M${x} ${y}`;
+        });
+        const last = pts[pts.length - 1],
+          lx = X(N - 1),
+          ly = Y(last.px),
+          col = { buy: "#1f7a4d", sell: "#b91c1c", late: "#b7791f" };
+        const grid = [0, 1, 2, 3]
+          .map((k) => {
+            const v = lo + (span * k) / 3,
+              y = Y(v);
+            return `<line x1="0" x2="${W - padR}" y1="${y}" y2="${y}" stroke="rgba(11,11,16,.08)" stroke-dasharray="3 4"/><text class="axis" x="${W - padR + 8}" y="${y + 4}">${v.toFixed(1)}</text>`;
+          })
+          .join("");
+        const dots = pts
+          .map((p, i) =>
+            p.px == null
+              ? ""
+              : `<circle cx="${X(i + off)}" cy="${Y(p.px)}" r="3.4" fill="${col[p.side] || "#999"}" opacity=".9"/>`,
+          )
+          .join("");
+        svg.innerHTML = `<defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="rgba(10,140,255,.16)"/><stop offset="1" stop-color="rgba(10,140,255,0)"/></linearGradient></defs>${grid}<path d="${d} V${H - padB} H${X(off)} Z" fill="url(#g)"/><path d="${d}" fill="none" stroke="#0b0b10" stroke-width="1.6"/>${dots}<line x1="${lx}" x2="${lx}" y1="${ly}" y2="${H - padB}" stroke="rgba(11,11,16,.25)" stroke-dasharray="2 3"/><circle cx="${lx}" cy="${ly}" r="6" fill="${col[last.side] || "#999"}" stroke="#fff" stroke-width="2"/><rect x="${lx + 10}" y="${ly - 12}" rx="11" width="78" height="24" fill="#0b0b10"/><text class="tag" x="${lx + 16}" y="${ly + 4}" fill="#fff">${last.px.toLocaleString(undefined, { maximumFractionDigits: 1 })}</text>`;
+      }
+
+      poll();
+    </script>
+  </body>
+</html>
