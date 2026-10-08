@@ -1,6 +1,13 @@
 """Tests for the bar-replay backtester. All synthetic bars, no network."""
 
-from jevloop.backtest import BacktestConfig, simulate, format_report, _normalise_bars
+from jevloop.backtest import (
+    BacktestConfig,
+    simulate,
+    simulate_maker,
+    format_report,
+    format_maker_report,
+    _normalise_bars,
+)
 
 
 def bar(o, h, l, c):
@@ -106,3 +113,69 @@ def test_report_renders_with_trades():
     txt = format_report(res, "BTC/USD")
     assert "win rate" in txt
     assert "net P&L" in txt
+
+
+# ========================= maker / spread-capture ========================= #
+
+def chop(n=20, mid=80_000.0, pad=100.0):
+    """Bars that oscillate enough to touch both a tight bid and ask each bar."""
+    return [bar(mid, mid + pad, mid - pad, mid) for _ in range(n)]
+
+
+def downtrend(n=10, start=80_000.0, step=50.0, dip=150.0):
+    """Each bar opens lower and dips (low below bid) but never rallies to the
+    ask: a long-only maker just accumulates inventory."""
+    bars = []
+    p = start
+    for _ in range(n):
+        o = p
+        bars.append(bar(o, o, o - dip, o - step))  # high == open: ask never hit
+        p = o - step
+    return bars
+
+
+def test_maker_too_few_bars():
+    res = simulate_maker([bar(1, 1, 1, 1)], BacktestConfig())
+    assert res.buys == 0 and res.sells == 0
+
+
+def test_maker_captures_spread_in_chop_zero_fee():
+    res = simulate_maker(chop(), BacktestConfig(quote_bps=10.0, maker_fee_bps=0.0))
+    assert res.buys > 0 and res.sells > 0
+    assert res.spread_captured_usd > 0
+    assert res.net_pnl_usd > 0  # spread with no fee is pure profit in chop
+
+
+def test_maker_fee_above_spread_loses():
+    # 4 bps spread vs 20 bps round-trip fee -> no edge to capture.
+    res = simulate_maker(chop(), BacktestConfig(quote_bps=4.0, maker_fee_bps=10.0))
+    assert res.round_trips > 0
+    assert res.net_pnl_usd < 0
+
+
+def test_maker_adverse_selection_in_downtrend():
+    res = simulate_maker(downtrend(), BacktestConfig(quote_bps=4.0, maker_fee_bps=0.0,
+                                                     trade_usd=100.0,
+                                                     max_inventory_usd=300.0))
+    assert res.sells == 0  # ask never filled
+    assert res.buys > 0
+    assert res.end_inventory_usd > 0  # stuck long
+    assert res.end_inventory_mtm_pnl < 0  # marked against us
+    assert res.net_pnl_usd < 0
+    assert res.max_drawdown_usd < 0
+
+
+def test_maker_respects_inventory_cap():
+    # cap 300, clip 100 -> at most ~4 buys before the cap blocks further fills.
+    res = simulate_maker(downtrend(n=30), BacktestConfig(quote_bps=4.0, maker_fee_bps=0.0,
+                                                         trade_usd=100.0,
+                                                         max_inventory_usd=300.0))
+    assert res.buys <= 4
+
+
+def test_maker_report_renders():
+    res = simulate_maker(chop(), BacktestConfig(quote_bps=10.0, maker_fee_bps=0.0))
+    txt = format_maker_report(res, "BTC/USD")
+    assert "MAKER" in txt
+    assert "NET P&L" in txt
+    assert "verdict:" in txt

@@ -45,6 +45,10 @@ class BacktestConfig:
     spread_bps: float = 2.0  # assumed round-trip spread (half crossed each side)
     trade_usd: float = 100.0  # notional per scalp, for the $ P&L column
     body_proxy: bool = False  # use (close-open)/(high-low) as a buy-pressure proxy
+    # --- maker mode only ---
+    quote_bps: float = 4.0  # full quoted spread (half posted each side of mid)
+    maker_fee_bps: float = 10.0  # maker fee per side (0 on a rebate/zero-fee venue)
+    max_inventory_usd: float = 300.0  # long-only inventory cap
 
     @property
     def cost_bps_per_side(self) -> float:
@@ -220,6 +224,154 @@ def simulate(bars: list[dict], cfg: BacktestConfig | None = None) -> BacktestRes
 
 
 # --------------------------------------------------------------------------- #
+# maker / spread-capture simulation (long-only market making on 1m bars)
+# --------------------------------------------------------------------------- #
+@dataclass
+class MakerResult:
+    n_bars: int
+    cfg: BacktestConfig
+    buys: int = 0
+    sells: int = 0
+    realised_pnl_usd: float = 0.0
+    fees_usd: float = 0.0
+    spread_captured_usd: float = 0.0  # gross spread earned on matched round-trips
+    max_inventory_usd: float = 0.0
+    end_inventory_usd: float = 0.0
+    end_inventory_mtm_pnl: float = 0.0  # unrealised on leftover inventory at last close
+    equity_usd: list[float] = field(default_factory=list)  # realised+unrealised curve
+
+    @property
+    def round_trips(self) -> int:
+        return min(self.buys, self.sells)
+
+    @property
+    def net_pnl_usd(self) -> float:
+        # realised round-trip P&L, plus mark-to-market of whatever is left, less fees
+        return self.realised_pnl_usd + self.end_inventory_mtm_pnl - self.fees_usd
+
+    @property
+    def max_drawdown_usd(self) -> float:
+        peak = 0.0
+        dd = 0.0
+        for e in self.equity_usd:
+            peak = max(peak, e)
+            dd = min(dd, e - peak)
+        return dd
+
+
+def simulate_maker(bars: list[dict], cfg: BacktestConfig | None = None) -> MakerResult:
+    """Long-only market making. Each bar, post a bid and an ask straddling the
+    bar's open. A bid fills if the bar's low trades down to it; an ask fills if
+    the high trades up to it. We can only sell inventory we already bought
+    (Alpaca crypto is spot, no shorting), so in a downtrend buys keep filling
+    while asks do not and inventory -- and drawdown -- builds. That adverse
+    selection is the whole point of the exercise.
+
+    Fill convention: within a bar, if both sides are touched we assume both
+    fill (optimistic but standard first-order); we do not know the intrabar
+    path. Fills are one clip (`trade_usd`) per side per bar."""
+    cfg = cfg or BacktestConfig()
+    res = MakerResult(n_bars=len(bars), cfg=cfg)
+    if len(bars) < 2:
+        return res
+
+    half = (cfg.quote_bps / 2.0) / 1e4
+    fee = cfg.maker_fee_bps / 1e4
+    clip = cfg.trade_usd
+
+    inv_qty = 0.0
+    avg_cost = 0.0  # cost-basis incl. maker fee paid on buys
+
+    for i in range(len(bars)):
+        b = bars[i]
+        mid = b["o"]
+        bid = mid * (1 - half)
+        ask = mid * (1 + half)
+        inv_usd = inv_qty * mid
+
+        # BID: buy the dip if the low reached our bid and we have inventory room.
+        if b["l"] <= bid and inv_usd < cfg.max_inventory_usd:
+            qty = clip / bid
+            fee_usd = clip * fee
+            # new weighted average cost, including the fee just paid
+            new_qty = inv_qty + qty
+            avg_cost = (avg_cost * inv_qty + bid * qty + fee_usd) / new_qty if new_qty else 0.0
+            inv_qty = new_qty
+            res.buys += 1
+            res.fees_usd += fee_usd
+
+        # ASK: sell into strength if the high reached our ask and we hold inventory.
+        if b["h"] >= ask and inv_qty > 0:
+            qty = min(clip / ask, inv_qty)
+            proceeds = qty * ask
+            fee_usd = proceeds * fee
+            res.realised_pnl_usd += qty * (ask - avg_cost)
+            res.spread_captured_usd += qty * (ask - bid)
+            inv_qty -= qty
+            res.sells += 1
+            res.fees_usd += fee_usd
+
+        inv_usd = inv_qty * mid
+        res.max_inventory_usd = max(res.max_inventory_usd, inv_usd)
+        # equity curve: realised + current unrealised - fees so far
+        unreal = inv_qty * (b["c"] - avg_cost) if inv_qty else 0.0
+        res.equity_usd.append(res.realised_pnl_usd + unreal - res.fees_usd)
+
+    last = bars[-1]["c"]
+    res.end_inventory_usd = inv_qty * last
+    res.end_inventory_mtm_pnl = inv_qty * (last - avg_cost) if inv_qty else 0.0
+    return res
+
+
+def format_maker_report(res: MakerResult, symbol: str) -> str:
+    cfg = res.cfg
+    L = []
+    L.append("=" * 64)
+    L.append(f"BACKTEST  {symbol}  (MAKER / spread capture, long-only, 1m bars)")
+    L.append("=" * 64)
+    L.append("HONEST SCOPE: a bid fills when the bar low reaches it, an ask when")
+    L.append("the high reaches it (reconstructable from OHLC); intrabar path is")
+    L.append("unknown, so a bar touching both sides is counted as both filled.")
+    L.append("Long-only: inventory builds in downtrends -- that adverse selection")
+    L.append("is modelled, not assumed away.")
+    L.append("-" * 64)
+    L.append(f"bars replayed:        {res.n_bars}")
+    L.append(f"quoted spread:        {cfg.quote_bps:.1f} bps  "
+             f"(maker fee {cfg.maker_fee_bps:.1f} bps/side -> "
+             f"{2 * cfg.maker_fee_bps:.1f} bps round-trip)")
+    L.append(f"clip / inventory cap: ${cfg.trade_usd:,.0f} / ${cfg.max_inventory_usd:,.0f}")
+    L.append("-" * 64)
+    L.append(f"buy fills / sell fills: {res.buys} / {res.sells}  "
+             f"({res.round_trips} round-trips)")
+    L.append(f"gross spread captured:  ${res.spread_captured_usd:+,.2f}")
+    L.append(f"realised P&L:           ${res.realised_pnl_usd:+,.2f}")
+    L.append(f"fees paid:              ${res.fees_usd:,.2f}")
+    L.append(f"max inventory held:     ${res.max_inventory_usd:,.2f}")
+    L.append(f"leftover inventory:     ${res.end_inventory_usd:,.2f} "
+             f"(mark-to-market {res.end_inventory_mtm_pnl:+,.2f})")
+    L.append(f"NET P&L (incl. MTM):    ${res.net_pnl_usd:+,.2f}")
+    L.append(f"max drawdown:           ${res.max_drawdown_usd:,.2f}")
+    L.append("-" * 64)
+    rt_cost = 2 * cfg.maker_fee_bps
+    if res.net_pnl_usd > 0:
+        verdict = (f"net positive here: the {cfg.quote_bps:.0f} bps spread beat the "
+                   f"{rt_cost:.0f} bps round-trip fee and the inventory risk on THIS "
+                   "window. Maker economics can work -- but leftover inventory and "
+                   "drawdown are the real risk, not the spread.")
+    elif cfg.quote_bps <= rt_cost:
+        verdict = (f"net negative: the maker fee ({rt_cost:.0f} bps round-trip) is at "
+                   f"or above the {cfg.quote_bps:.0f} bps spread, so there is no edge "
+                   "to capture. Needs a lower/zero maker fee (a rebate venue), not "
+                   "Alpaca's retail tier.")
+    else:
+        verdict = ("net negative despite spread > fee: adverse selection -- inventory "
+                   "built up in down-moves and marked against you -- ate the spread.")
+    L.append("verdict: " + verdict)
+    L.append("=" * 64)
+    return "\n".join(L)
+
+
+# --------------------------------------------------------------------------- #
 # reporting
 # --------------------------------------------------------------------------- #
 def format_report(res: BacktestResult, symbol: str) -> str:
@@ -283,21 +435,32 @@ def _normalise_bars(raw: list[dict]) -> list[dict]:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="jev-loop backtest")
+    ap.add_argument("--mode", choices=("taker", "maker"), default="taker",
+                    help="taker = the scalper's market-order legs; "
+                         "maker = long-only spread capture with resting quotes")
     ap.add_argument("--symbol", default="BTC/USD")
     ap.add_argument("--minutes", type=int, default=1000,
                     help="how many 1-minute bars back to replay (max ~1000/req)")
     ap.add_argument("--fee-bps", type=float, default=15.0,
-                    help="taker fee per side, bps (Alpaca crypto retail ~15)")
+                    help="[taker] taker fee per side, bps (Alpaca crypto retail ~15)")
     ap.add_argument("--spread-bps", type=float, default=2.0,
-                    help="assumed round-trip spread, bps")
-    ap.add_argument("--trade-usd", type=float, default=100.0)
+                    help="[taker] assumed round-trip spread, bps")
+    ap.add_argument("--trade-usd", type=float, default=100.0, help="notional per clip")
     ap.add_argument("--body-proxy", action="store_true",
-                    help="use candle body as a buy-pressure proxy (clearly a proxy)")
+                    help="[taker] use candle body as a buy-pressure proxy (a proxy)")
+    ap.add_argument("--quote-bps", type=float, default=4.0,
+                    help="[maker] full quoted spread, bps (half posted each side)")
+    ap.add_argument("--maker-fee-bps", type=float, default=10.0,
+                    help="[maker] maker fee per side, bps (0 on a rebate venue)")
+    ap.add_argument("--max-inventory-usd", type=float, default=300.0,
+                    help="[maker] long-only inventory cap")
     args = ap.parse_args(argv)
 
     cfg = BacktestConfig(
         fee_bps_per_side=args.fee_bps, spread_bps=args.spread_bps,
         trade_usd=args.trade_usd, body_proxy=args.body_proxy,
+        quote_bps=args.quote_bps, maker_fee_bps=args.maker_fee_bps,
+        max_inventory_usd=args.max_inventory_usd,
     )
 
     try:
@@ -329,6 +492,10 @@ def main(argv: list[str]) -> int:
               "Try a larger --minutes.")
         return 1
 
-    res = simulate(bars, cfg)
-    print(format_report(res, args.symbol))
+    if args.mode == "maker":
+        mres = simulate_maker(bars, cfg)
+        print(format_maker_report(mres, args.symbol))
+    else:
+        res = simulate(bars, cfg)
+        print(format_report(res, args.symbol))
     return 0
