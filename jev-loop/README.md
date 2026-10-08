@@ -103,6 +103,35 @@ fills. `jevloop/strategy.py` owns the seven tunable thresholds behind
 look at every action before it goes near an order, free to change or
 veto it. The shipped default matches exactly what the video ran.
 
+A named example strategy ships alongside it: set `JEV_STRATEGY=btc_scalp`
+in `.env` to run a long/flat microstructure scalper driven by the
+deterministic snapshot (microprice tilt, book imbalance, aggressive-buy
+ratio, 1m momentum). It is a harness for the entry/exit/inventory
+plumbing, not a proven edge.
+
+## Backtesting
+
+`jev-loop backtest` replays strategy logic over historical Alpaca bars
+with realistic costs. No orders are ever sent. Three modes:
+
+```bash
+# taker: the scalper's market-order legs, 1m bars (momentum component only --
+# book microstructure is not in OHLC history, so this is a cost/behaviour check)
+uv run python -m jevloop backtest --mode taker  --symbol BTC/USD --minutes 1000
+
+# maker: long-only spread capture with resting quotes, 1m bars. A bid fills
+# when the bar low reaches it, an ask when the high does; inventory builds in
+# downtrends (adverse selection is modelled). Alpaca charges makers too.
+uv run python -m jevloop backtest --mode maker  --symbol BTC/USD --quote-bps 6 --maker-fee-bps 10
+
+# tsmom: long/flat daily time-series momentum, head-to-head vs buy-and-hold.
+uv run python -m jevloop backtest --mode tsmom  --symbol BTC/USD --days 700 --lookback-days 50
+```
+
+A backtest is evidence on one asset over one window, not proof of an
+edge, and every report says so. Isolate signal quality from costs by
+rerunning with `--fee-bps 0 --spread-bps 0`.
+
 ## The nine-stage loop
 
 ```

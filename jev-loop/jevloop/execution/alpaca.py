@@ -364,16 +364,21 @@ class AlpacaPaperClient:
         )
         return (data.get("trades") or {}).get(self.symbol, []) or []
 
-    def get_minute_bars(self, start_iso: str, limit: int = 1000) -> list:
-        """One-minute bars since `start_iso`. Used once at startup so the
-        1m/5m/30m returns and volatility have real history from tick one."""
+    def get_bars(self, start_iso: str, timeframe: str = "1Min", limit: int = 1000) -> list:
+        """Bars of any `timeframe` (e.g. '1Min', '1Hour', '1Day') since
+        `start_iso`, oldest first."""
         url = self.spec.recent_trades_url.rsplit("/trades", 1)[0] + "/bars"
         data = self._request(
             "GET",
             url,
-            params=self._data_params(start=start_iso, timeframe="1Min", limit=limit),
+            params=self._data_params(start=start_iso, timeframe=timeframe, limit=limit),
         )
         return (data.get("bars") or {}).get(self.symbol, []) or []
+
+    def get_minute_bars(self, start_iso: str, limit: int = 1000) -> list:
+        """One-minute bars since `start_iso`. Used once at startup so the
+        1m/5m/30m returns and volatility have real history from tick one."""
+        return self.get_bars(start_iso, timeframe="1Min", limit=limit)
 
 
 def client_from_env(

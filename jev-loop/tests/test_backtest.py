@@ -179,3 +179,62 @@ def test_maker_report_renders():
     assert "MAKER" in txt
     assert "NET P&L" in txt
     assert "verdict:" in txt
+
+
+# ================================ TSMOM =================================== #
+from jevloop.backtest import TsmomConfig, simulate_tsmom, format_tsmom_report
+
+
+def closes_to_bars(closes):
+    # TSMOM uses closes only; o/h/l are set equal so the helpers stay valid.
+    return [bar(c, c, c, c) for c in closes]
+
+
+def test_tsmom_too_few_bars():
+    res = simulate_tsmom(closes_to_bars([100.0] * 5), TsmomConfig(lookback_days=30))
+    assert res.days_total == 0
+
+
+def test_tsmom_rides_an_uptrend_fully_invested():
+    # steady uptrend: trailing return always positive -> always long, one entry.
+    closes = [100.0 * (1.01 ** i) for i in range(80)]
+    res = simulate_tsmom(closes_to_bars(closes),
+                         TsmomConfig(lookback_days=10, cost_bps_one_way=15.0))
+    assert res.days_total > 0
+    assert res.time_in_market > 0.9  # essentially always long
+    assert res.trades <= 2  # at most one entry (and maybe exit at the very end)
+    # with (almost) full exposure the strategy tracks buy-and-hold closely
+    assert res.strat_total_return > 0
+
+
+def test_tsmom_sidesteps_a_crash_shallower_drawdown():
+    # up for 60 days, then a sustained crash: TSMOM should flip to cash and
+    # take a much shallower drawdown than buy-and-hold.
+    up = [100.0 * (1.01 ** i) for i in range(60)]
+    peak = up[-1]
+    crash = [peak * (0.97 ** i) for i in range(1, 40)]
+    res = simulate_tsmom(closes_to_bars(up + crash),
+                         TsmomConfig(lookback_days=10, cost_bps_one_way=15.0))
+    # shallower (less negative) drawdown than just holding
+    assert res.strat_max_dd > res.hold_max_dd
+    # and it spent part of the crash in cash
+    assert res.time_in_market < 1.0
+
+
+def test_tsmom_counts_transitions_and_costs():
+    # one clean regime flip: up then down -> expect at least one enter and exit.
+    up = [100.0 + i for i in range(40)]
+    down = [up[-1] - i for i in range(1, 40)]
+    res = simulate_tsmom(closes_to_bars(up + down),
+                         TsmomConfig(lookback_days=10, cost_bps_one_way=50.0))
+    assert res.trades >= 2
+    assert len(res.strat_rets) == res.days_total
+
+
+def test_tsmom_report_renders():
+    closes = [100.0 * (1.005 ** i) for i in range(80)]
+    res = simulate_tsmom(closes_to_bars(closes), TsmomConfig(lookback_days=10))
+    txt = format_tsmom_report(res, "BTC/USD")
+    assert "TSMOM" in txt
+    assert "buy & hold" in txt
+    assert "max drawdown" in txt

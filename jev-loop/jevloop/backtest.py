@@ -372,6 +372,186 @@ def format_maker_report(res: MakerResult, symbol: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# TSMOM: time-series momentum, long/flat, on daily bars
+# --------------------------------------------------------------------------- #
+@dataclass
+class TsmomConfig:
+    lookback_days: int = 30  # sign of the trailing return over this window = signal
+    cost_bps_one_way: float = 15.0  # taker cost per transition (enter OR exit)
+    bars_per_year: float = 365.0  # crypto trades every day
+
+
+@dataclass
+class TsmomResult:
+    n_bars: int
+    cfg: TsmomConfig
+    strat_equity: list[float] = field(default_factory=list)
+    hold_equity: list[float] = field(default_factory=list)
+    strat_rets: list[float] = field(default_factory=list)
+    hold_rets: list[float] = field(default_factory=list)
+    trades: int = 0  # position transitions
+    days_in_market: int = 0
+    days_total: int = 0
+
+    @staticmethod
+    def _total_return(eq: list[float]) -> float:
+        return eq[-1] / eq[0] - 1 if len(eq) >= 2 and eq[0] else 0.0
+
+    @staticmethod
+    def _max_dd(eq: list[float]) -> float:
+        peak = eq[0] if eq else 1.0
+        dd = 0.0
+        for e in eq:
+            peak = max(peak, e)
+            if peak:
+                dd = min(dd, e / peak - 1)
+        return dd
+
+    def _cagr(self, eq: list[float]) -> float:
+        if len(eq) < 2 or eq[0] <= 0:
+            return 0.0
+        years = len(self.strat_rets) / self.cfg.bars_per_year
+        if years <= 0:
+            return 0.0
+        return (eq[-1] / eq[0]) ** (1 / years) - 1
+
+    def _sharpe(self, rets: list[float]) -> float:
+        if len(rets) < 2:
+            return 0.0
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        sd = var ** 0.5
+        if sd == 0:
+            return 0.0
+        return (mean / sd) * (self.cfg.bars_per_year ** 0.5)
+
+    @property
+    def strat_total_return(self) -> float:
+        return self._total_return(self.strat_equity)
+
+    @property
+    def hold_total_return(self) -> float:
+        return self._total_return(self.hold_equity)
+
+    @property
+    def strat_cagr(self) -> float:
+        return self._cagr(self.strat_equity)
+
+    @property
+    def hold_cagr(self) -> float:
+        return self._cagr(self.hold_equity)
+
+    @property
+    def strat_max_dd(self) -> float:
+        return self._max_dd(self.strat_equity)
+
+    @property
+    def hold_max_dd(self) -> float:
+        return self._max_dd(self.hold_equity)
+
+    @property
+    def strat_sharpe(self) -> float:
+        return self._sharpe(self.strat_rets)
+
+    @property
+    def hold_sharpe(self) -> float:
+        return self._sharpe(self.hold_rets)
+
+    @property
+    def time_in_market(self) -> float:
+        return self.days_in_market / self.days_total if self.days_total else 0.0
+
+
+def simulate_tsmom(bars: list[dict], cfg: TsmomConfig | None = None) -> TsmomResult:
+    """Long/flat time-series momentum on daily bars (Moskowitz-Ooi-Pedersen,
+    reduced to a binary long-only rule for a spot, no-short venue).
+
+    Rule: hold long on day t iff the trailing `lookback_days` return measured
+    through day t-1 is positive; otherwise hold cash. No look-ahead -- the
+    position for day t uses only closes up to t-1. A transition (enter or
+    exit) pays `cost_bps_one_way`. Compared head-to-head with buy-and-hold."""
+    cfg = cfg or TsmomConfig()
+    res = TsmomResult(n_bars=len(bars), cfg=cfg)
+    L = cfg.lookback_days
+    closes = [b["c"] for b in bars]
+    n = len(closes)
+    if n < L + 2:
+        return res
+
+    cost = cfg.cost_bps_one_way / 1e4
+    strat_eq = 1.0
+    hold_eq = 1.0
+    prev_pos = 0
+    res.strat_equity.append(strat_eq)
+    res.hold_equity.append(hold_eq)
+
+    # t runs where both the day's return r[t] and the lagged signal exist.
+    for t in range(L + 1, n):
+        r = closes[t] / closes[t - 1] - 1  # day t's asset return
+        trailing = closes[t - 1] / closes[t - 1 - L] - 1  # signal, info through t-1
+        pos = 1 if trailing > 0 else 0
+
+        transition_cost = cost if pos != prev_pos else 0.0
+        strat_r = pos * r - transition_cost
+        if pos != prev_pos:
+            res.trades += 1
+
+        strat_eq *= (1 + strat_r)
+        hold_eq *= (1 + r)
+        res.strat_equity.append(strat_eq)
+        res.hold_equity.append(hold_eq)
+        res.strat_rets.append(strat_r)
+        res.hold_rets.append(r)
+        res.days_total += 1
+        res.days_in_market += pos
+        prev_pos = pos
+
+    return res
+
+
+def format_tsmom_report(res: TsmomResult, symbol: str) -> str:
+    cfg = res.cfg
+    L = []
+    L.append("=" * 64)
+    L.append(f"BACKTEST  {symbol}  (TSMOM, long/flat, daily bars)")
+    L.append("=" * 64)
+    L.append(f"rule: long when the trailing {cfg.lookback_days}-day return is")
+    L.append("positive, else cash. Decision lagged one day (no look-ahead).")
+    L.append(f"cost: {cfg.cost_bps_one_way:.0f} bps per transition. Head-to-head vs")
+    L.append("buy-and-hold on the same bars.")
+    L.append("-" * 64)
+    if res.days_total == 0:
+        L.append(f"not enough daily bars (need > {cfg.lookback_days + 2}). "
+                 "Try a larger --days.")
+        L.append("=" * 64)
+        return "\n".join(L)
+    L.append(f"days tested:          {res.days_total}  "
+             f"(~{res.days_total / cfg.bars_per_year:.1f} years)")
+    L.append(f"position changes:     {res.trades}")
+    L.append(f"time in market:       {res.time_in_market:.1%}")
+    L.append("-" * 64)
+    L.append(f"{'metric':<22}{'TSMOM':>18}{'buy & hold':>18}")
+    L.append(f"{'total return':<22}{res.strat_total_return:>17.1%}"
+             f"{res.hold_total_return:>18.1%}")
+    L.append(f"{'CAGR':<22}{res.strat_cagr:>17.1%}{res.hold_cagr:>18.1%}")
+    L.append(f"{'max drawdown':<22}{res.strat_max_dd:>17.1%}{res.hold_max_dd:>18.1%}")
+    L.append(f"{'Sharpe (annualised)':<22}{res.strat_sharpe:>17.2f}"
+             f"{res.hold_sharpe:>18.2f}")
+    L.append("-" * 64)
+    beat_ret = res.strat_total_return > res.hold_total_return
+    less_dd = res.strat_max_dd > res.hold_max_dd  # less negative = shallower
+    parts = []
+    parts.append(("beat" if beat_ret else "trailed") + " buy-and-hold on return")
+    parts.append(("shallower" if less_dd else "deeper") + " max drawdown")
+    L.append("verdict: " + "; ".join(parts) + ".")
+    L.append("NOTE: one asset, one window, a short crypto sample -- this is")
+    L.append("evidence, not proof. TSMOM's historical value is cutting drawdown")
+    L.append("by sidestepping sustained declines, not beating a raging bull.")
+    L.append("=" * 64)
+    return "\n".join(L)
+
+
+# --------------------------------------------------------------------------- #
 # reporting
 # --------------------------------------------------------------------------- #
 def format_report(res: BacktestResult, symbol: str) -> str:
@@ -435,12 +615,19 @@ def _normalise_bars(raw: list[dict]) -> list[dict]:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="jev-loop backtest")
-    ap.add_argument("--mode", choices=("taker", "maker"), default="taker",
+    ap.add_argument("--mode", choices=("taker", "maker", "tsmom"), default="taker",
                     help="taker = the scalper's market-order legs; "
-                         "maker = long-only spread capture with resting quotes")
+                         "maker = long-only spread capture with resting quotes; "
+                         "tsmom = long/flat daily time-series momentum")
     ap.add_argument("--symbol", default="BTC/USD")
     ap.add_argument("--minutes", type=int, default=1000,
-                    help="how many 1-minute bars back to replay (max ~1000/req)")
+                    help="[taker/maker] how many 1-minute bars back to replay")
+    ap.add_argument("--days", type=int, default=400,
+                    help="[tsmom] how many daily bars back to replay")
+    ap.add_argument("--lookback-days", type=int, default=30,
+                    help="[tsmom] trailing-return window whose sign is the signal")
+    ap.add_argument("--cost-bps-one-way", type=float, default=15.0,
+                    help="[tsmom] cost per position change (enter or exit), bps")
     ap.add_argument("--fee-bps", type=float, default=15.0,
                     help="[taker] taker fee per side, bps (Alpaca crypto retail ~15)")
     ap.add_argument("--spread-bps", type=float, default=2.0,
@@ -476,23 +663,35 @@ def main(argv: list[str]) -> int:
         print("set ALPACA_API_KEY / ALPACA_SECRET_KEY (paper) first.")
         return 1
 
-    minutes = max(3, min(args.minutes, 10000))
-    start = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=minutes + 5)
-    start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"fetching ~{minutes} one-minute bars for {args.symbol} since {start_iso} ...")
+    now = _dt.datetime.now(_dt.timezone.utc)
     try:
-        raw = client.get_minute_bars(start_iso, limit=min(minutes + 5, 1000))
+        if args.mode == "tsmom":
+            days = max(5, min(args.days, 2000))
+            start = now - _dt.timedelta(days=days + 5)
+            start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+            print(f"fetching ~{days} daily bars for {args.symbol} since {start_iso} ...")
+            raw = client.get_bars(start_iso, timeframe="1Day", limit=min(days + 5, 2000))
+        else:
+            minutes = max(3, min(args.minutes, 10000))
+            start = now - _dt.timedelta(minutes=minutes + 5)
+            start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+            print(f"fetching ~{minutes} one-minute bars for {args.symbol} since {start_iso} ...")
+            raw = client.get_minute_bars(start_iso, limit=min(minutes + 5, 1000))
     except Exception as exc:
         print(f"bar fetch failed: {exc}")
         return 1
 
     bars = _normalise_bars(raw)
     if len(bars) < 3:
-        print(f"only {len(bars)} usable bars returned; need at least 3. "
-              "Try a larger --minutes.")
+        print(f"only {len(bars)} usable bars returned; need more. Try a larger window.")
         return 1
 
-    if args.mode == "maker":
+    if args.mode == "tsmom":
+        tcfg = TsmomConfig(lookback_days=args.lookback_days,
+                           cost_bps_one_way=args.cost_bps_one_way)
+        tres = simulate_tsmom(bars, tcfg)
+        print(format_tsmom_report(tres, args.symbol))
+    elif args.mode == "maker":
         mres = simulate_maker(bars, cfg)
         print(format_maker_report(mres, args.symbol))
     else:
